@@ -1,0 +1,10 @@
+{
+  "name": "pi-sandbox-extension",
+  "version": "0.1.0",
+  "description": "pi CLI extension: connect to the sandbox platform and route built-in tools into an Apptainer container",
+  "type": "module",
+  "private": true,
+  "pi": {
+    "extensions": ["./index.ts"]
+  }
+}
