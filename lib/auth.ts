@@ -8,9 +8,7 @@
 import type { ExtensionContext, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { PlatformClient, PlatformError } from "./client.ts";
 import { loadConfig, type PlatformConfig } from "./config.ts";
-
-/** Conventional workspace root inside the remote container. */
-export const REMOTE_WORKSPACE = "/workspace";
+import { REMOTE_WORKSPACE } from "./constants.ts";
 
 export interface ConnectionState {
   client: PlatformClient;

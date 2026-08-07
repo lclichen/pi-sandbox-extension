@@ -19,9 +19,10 @@ import type {
   WriteOperations,
 } from "@earendil-works/pi-coding-agent";
 import type { PlatformClient } from "./client.ts";
+import { REMOTE_WORKSPACE } from "./constants.ts";
 
-/** The conventional workspace root inside Apptainer containers. */
-export const GUEST_WORKSPACE = "/workspace";
+/** Back-compat alias; prefer REMOTE_WORKSPACE from ./constants.ts. */
+export { REMOTE_WORKSPACE as GUEST_WORKSPACE };
 
 function stripAt(p: string): string {
   return p.startsWith("@") ? p.slice(1) : p;
