@@ -113,6 +113,7 @@ Project-local override: `<cwd>/.pi/sandbox-platform.json`.
 | `/sandbox-status` | Show the connected user, container, and instance         |
 | `/sandbox-list`   | List running containers and connect to one               |
 | `/sandbox-new`    | Create a new container and connect to it                 |
+| `/sandbox-sync`   | Upload the local project into the container's `/workspace` |
 | `/sandbox-url`    | Print the configured platform URL                        |
 | `/sandbox-apikey` | Manage long-lived API keys (create / list / revoke / use)|
 
@@ -124,11 +125,22 @@ and connects to it — so after `/sandbox-login` you can start coding
 immediately. Use `/sandbox-new` to create a container with a specific image or
 name.
 
+## Workspace sync
+
+The container lives on the platform server, your project lives on your
+machine. On auto-create (and via `/sandbox-sync`), the extension uploads the
+local project into the container's `/workspace` — skipping `.git`,
+`node_modules`, `dist`, `build`, virtualenvs and files over 8MB — so the
+agent inside the container works on the same files you see locally. Re-run
+`/sandbox-sync` after local changes to refresh the container copy.
+
 ## Notes
 
 - The extension falls back to **local host execution** when no container is
   connected or the platform is unreachable, so loading it is never fatal. You
-  will see a status-bar indicator when a container is active.
+  will see a status-bar indicator when a container is active. In the local
+  fallback, container-style paths (`/workspace/...`) are translated to the
+  local project directory.
 - Token refresh is automatic: on a 401 the extension silently refreshes once
   using the cached refresh token before retrying.
 - **Live bash output**: `bash` commands stream their stdout/stderr in real

@@ -5,6 +5,7 @@
  *   /sandbox-status  show current user, container, and connection state
  *   /sandbox-list    list running containers and select one to connect
  *   /sandbox-new     create a new container and connect to it
+ *   /sandbox-sync    upload the local project into the container's /workspace
  *   /sandbox-url     print the configured platform URL
  *   /sandbox-apikey  manage long-lived API keys (create / list / revoke / use)
  */
@@ -12,6 +13,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { makeClient, ensureAuthenticated, getState, setState } from "./auth.ts";
 import { PlatformError } from "./client.ts";
 import { saveConfig } from "./config.ts";
+import { syncWorkspaceToContainer } from "./sync.ts";
 
 export function registerCommands(pi: ExtensionAPI): void {
   pi.registerCommand("sandbox-login", {
@@ -218,6 +220,33 @@ export function registerCommands(pi: ExtensionAPI): void {
         ctx.ui.notify(`Created and connected to container #${created.id}.`, "info");
       } catch (err) {
         ctx.ui.notify(`Failed: ${err instanceof Error ? err.message : String(err)}`, "error");
+      }
+    },
+  });
+
+  pi.registerCommand("sandbox-sync", {
+    description: "Upload the local project into the container's /workspace",
+    handler: async (_args, ctx) => {
+      const st = getState();
+      if (!st?.containerId) {
+        ctx.ui.notify("No container connected. Run /sandbox-list or /sandbox-new first.", "warning");
+        return;
+      }
+      try {
+        ctx.ui.setStatus("sandbox", "Sandbox: syncing local project → /workspace…");
+        const result = await syncWorkspaceToContainer(st.client, st.containerId, ctx.cwd, {
+          onFile: (rel, index, total) =>
+            ctx.ui.setStatus("sandbox", `Sandbox: syncing ${index}/${total} ${rel}`),
+        });
+        const mb = (result.bytes / (1024 * 1024)).toFixed(1);
+        ctx.ui.notify(
+          result.failures.length > 0
+            ? `Synced ${result.files} files (${mb}MB); ${result.failures.length} failed.`
+            : `Synced ${result.files} files (${mb}MB) into /workspace.`,
+          result.failures.length > 0 ? "warning" : "info",
+        );
+      } catch (err) {
+        ctx.ui.notify(`Sync failed: ${err instanceof Error ? err.message : String(err)}`, "error");
       }
     },
   });

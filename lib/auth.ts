@@ -9,6 +9,7 @@ import type { ExtensionContext, ExtensionAPI } from "@earendil-works/pi-coding-a
 import { PlatformClient, PlatformError } from "./client.ts";
 import { loadConfig, type PlatformConfig } from "./config.ts";
 import { REMOTE_WORKSPACE } from "./constants.ts";
+import { syncWorkspaceToContainer } from "./sync.ts";
 
 export interface ConnectionState {
   client: PlatformClient;
@@ -97,7 +98,9 @@ export async function ensureContainer(
 /**
  * Auto-provision a container when the user has none running. Uses the first
  * public image and that image's default resources, so the user can start
- * working immediately after login without manual setup.
+ * working immediately after login without manual setup. The local project is
+ * then synced into the container's /workspace so the agent sees the same
+ * files as the user.
  */
 async function autoCreateContainer(
   ctx: ExtensionContext,
@@ -123,6 +126,12 @@ async function autoCreateContainer(
       diskGb: defaults?.diskGb,
     });
     ctx.ui.notify(`Auto-created container #${created.id} from ${image.name}.`, "info");
+    // Seed the container's /workspace with the local project.
+    await syncWorkspaceToContainer(client, created.id, ctx.cwd, {
+      onFile: (rel, index, total) =>
+        ctx.ui.setStatus("sandbox", `Sandbox: syncing ${index}/${total} ${rel}`),
+    });
+    ctx.ui.notify("Local project synced into the container's /workspace.", "info");
     return setContainer(ctx, client, created.id);
   } catch (err) {
     ctx.ui.notify(`Auto-create failed: ${err instanceof Error ? err.message : String(err)}`, "error");

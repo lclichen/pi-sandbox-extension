@@ -33,6 +33,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { makeClient, ensureAuthenticated, ensureContainer, getState, setState } from "./lib/auth.ts";
 import { createContainerAutocompleteProvider } from "./lib/autocomplete.ts";
+import { containerPathToLocal } from "./lib/paths.ts";
 import {
   createPlatformBashOps,
   createPlatformEditOps,
@@ -105,7 +106,10 @@ export default function (pi: ExtensionAPI) {
     ...localRead,
     async execute(id, params, signal, onUpdate, ctx) {
       const cid = await activeContainerId(ctx);
-      if (!cid) return localRead.execute(id, params, signal, onUpdate);
+      if (!cid) {
+        // Offline fallback: container-style paths map to the local project.
+        return localRead.execute(id, { ...params, path: containerPathToLocal(params.path, localCwd) }, signal, onUpdate);
+      }
       const tool = createReadTool(GUEST_WORKSPACE, {
         operations: createPlatformReadOps(getState()!.client, cid),
       });
@@ -117,7 +121,9 @@ export default function (pi: ExtensionAPI) {
     ...localWrite,
     async execute(id, params, signal, onUpdate, ctx) {
       const cid = await activeContainerId(ctx);
-      if (!cid) return localWrite.execute(id, params, signal, onUpdate);
+      if (!cid) {
+        return localWrite.execute(id, { ...params, path: containerPathToLocal(params.path, localCwd) }, signal, onUpdate);
+      }
       const tool = createWriteTool(GUEST_WORKSPACE, {
         operations: createPlatformWriteOps(getState()!.client, cid),
       });
@@ -129,7 +135,9 @@ export default function (pi: ExtensionAPI) {
     ...localEdit,
     async execute(id, params, signal, onUpdate, ctx) {
       const cid = await activeContainerId(ctx);
-      if (!cid) return localEdit.execute(id, params, signal, onUpdate);
+      if (!cid) {
+        return localEdit.execute(id, { ...params, path: containerPathToLocal(params.path, localCwd) }, signal, onUpdate);
+      }
       const tool = createEditTool(GUEST_WORKSPACE, {
         operations: createPlatformEditOps(getState()!.client, cid),
       });
@@ -153,7 +161,9 @@ export default function (pi: ExtensionAPI) {
     ...localLs,
     async execute(id, params, signal, onUpdate, ctx) {
       const cid = await activeContainerId(ctx);
-      if (!cid) return localLs.execute(id, params, signal, onUpdate);
+      if (!cid) {
+        return localLs.execute(id, { ...params, path: containerPathToLocal(params.path, localCwd) }, signal, onUpdate);
+      }
       const tool = createLsTool(GUEST_WORKSPACE, {
         operations: createPlatformLsOps(getState()!.client, cid),
       });
@@ -165,7 +175,14 @@ export default function (pi: ExtensionAPI) {
     ...localFind,
     async execute(id, params, signal, onUpdate, ctx) {
       const cid = await activeContainerId(ctx);
-      if (!cid) return localFind.execute(id, params, signal, onUpdate);
+      if (!cid) {
+        return localFind.execute(
+          id,
+          { ...params, path: containerPathToLocal(params.path ?? ".", localCwd) },
+          signal,
+          onUpdate,
+        );
+      }
       const st = getState()!;
       const results = await platformFind(st.client, cid, {
         pattern: params.pattern,
@@ -183,7 +200,14 @@ export default function (pi: ExtensionAPI) {
     ...localGrep,
     async execute(_id, params: GrepToolInput, _signal, _onUpdate, ctx) {
       const cid = await activeContainerId(ctx);
-      if (!cid) return localGrep.execute(_id, params, _signal, _onUpdate);
+      if (!cid) {
+        return localGrep.execute(
+          _id,
+          { ...params, path: containerPathToLocal(params.path ?? ".", localCwd) },
+          _signal,
+          _onUpdate,
+        );
+      }
       const st = getState()!;
       const output = await platformGrep(st.client, cid, {
         pattern: params.pattern,
