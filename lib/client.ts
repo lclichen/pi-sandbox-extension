@@ -227,6 +227,104 @@ export class PlatformClient {
     });
   }
 
+  /**
+   * Run a bash command with LIVE output via the SSE endpoint
+   * (POST /tools/bash/stream). Output chunks are delivered to `onData` as
+   * they arrive; the promise resolves with the exit outcome when the stream
+   * ends (`event: end`). Non-2xx responses (including 404/405 from platforms
+   * without the stream endpoint) reject with a PlatformError so callers can
+   * fall back to the request/response `toolBash`.
+   */
+  async toolBashStream(
+    containerId: number,
+    command: string,
+    opts: { cwd?: string; timeout?: number; signal?: AbortSignal; onData?: (chunk: Buffer) => void } = {},
+  ): Promise<{ exitCode: number | null; timedOut: boolean }> {
+    const doFetch = (): Promise<Response> =>
+      fetch(`${this.config.url}/api/v1/containers/${containerId}/tools/bash/stream`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...this.authHeaders(),
+        },
+        body: JSON.stringify({ command, cwd: opts.cwd, timeout: opts.timeout }),
+        signal: opts.signal,
+      });
+
+    let res = await doFetch();
+    // Only attempt JWT refresh when NOT using an API key (keys don't expire).
+    if (res.status === 401 && !this.config.apiKey && this.config.refreshToken) {
+      const refreshed = await this.refresh();
+      if (refreshed) res = await doFetch();
+    }
+    if (!res.ok) {
+      let payload: { code?: string; message?: string } = {};
+      try {
+        payload = await res.json();
+      } catch {
+        // non-JSON error
+      }
+      throw new PlatformError(
+        res.status,
+        payload.code ?? "http_error",
+        payload.message ?? `HTTP ${res.status}`,
+      );
+    }
+
+    const reader = res.body?.getReader();
+    if (!reader) throw new PlatformError(500, "stream_error", "Response body is not a readable stream");
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+
+    return new Promise<{ exitCode: number | null; timedOut: boolean }>((resolveFn, rejectFn) => {
+      void (async () => {
+        try {
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            // Process complete SSE blocks (terminated by a blank line).
+            let sep = buffer.indexOf("\n\n");
+            while (sep >= 0) {
+              const block = buffer.slice(0, sep).trim();
+              buffer = buffer.slice(sep + 2);
+              const event = parseSseEvent(block);
+              if (event) {
+                if (event.event === "data" && typeof event.data.chunk === "string") {
+                  opts.onData?.(Buffer.from(event.data.chunk, "base64"));
+                } else if (event.event === "end") {
+                  void reader.cancel();
+                  resolveFn({
+                    exitCode: event.data.timedOut ? null : (Number(event.data.exitCode) || 0),
+                    timedOut: Boolean(event.data.timedOut),
+                  });
+                  return;
+                } else if (event.event === "error") {
+                  void reader.cancel();
+                  // The platform carries the semantic HTTP status/code inside
+                  // the error event (SSE headers are already flushed).
+                  rejectFn(
+                    new PlatformError(
+                      Number(event.data.status) || 500,
+                      String(event.data.code ?? "stream_error"),
+                      String(event.data.message ?? "stream error"),
+                    ),
+                  );
+                  return;
+                }
+              }
+              sep = buffer.indexOf("\n\n");
+            }
+          }
+          // Stream closed without an `end` event — treat as a failure.
+          rejectFn(new PlatformError(500, "stream_error", "stream ended without an end event"));
+        } catch (err) {
+          rejectFn(err instanceof Error ? err : new Error(String(err)));
+        }
+      })();
+    });
+  }
+
   async toolGrep(
     containerId: number,
     params: { pattern: string; path?: string; glob?: string; literal?: boolean; ignoreCase?: boolean; context?: number; limit?: number },
@@ -247,5 +345,24 @@ export class PlatformClient {
       body: params,
     });
     return res.results;
+  }
+}
+
+/**
+ * Parse one SSE block ("event: X\ndata: {...}") into { event, data }.
+ * Returns null for heartbeat/empty blocks or malformed JSON.
+ */
+function parseSseEvent(block: string): { event: string; data: Record<string, unknown> } | null {
+  let event = "message";
+  const dataLines: string[] = [];
+  for (const line of block.split("\n")) {
+    if (line.startsWith("event:")) event = line.slice("event:".length).trim();
+    else if (line.startsWith("data:")) dataLines.push(line.slice("data:".length).trim());
+  }
+  if (dataLines.length === 0) return null;
+  try {
+    return { event, data: JSON.parse(dataLines.join("\n")) as Record<string, unknown> };
+  } catch {
+    return null;
   }
 }

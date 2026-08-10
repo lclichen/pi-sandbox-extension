@@ -131,5 +131,10 @@ name.
   will see a status-bar indicator when a container is active.
 - Token refresh is automatic: on a 401 the extension silently refreshes once
   using the cached refresh token before retrying.
+- **Live bash output**: `bash` commands stream their stdout/stderr in real
+  time over the platform's SSE endpoint (`POST /tools/bash/stream`) — progress
+  bars, logs, and long-running output appear as they are produced instead of
+  after completion. If the platform predates the stream endpoint (404/405),
+  the extension transparently falls back to request/response `bash`.
 - The platform relays tool operations; see `../sandbox-platform` for the
   container lifecycle (create/start/stop/snapshot/restore) and admin APIs.

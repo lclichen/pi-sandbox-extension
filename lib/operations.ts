@@ -18,7 +18,7 @@ import type {
   ReadOperations,
   WriteOperations,
 } from "@earendil-works/pi-coding-agent";
-import type { PlatformClient } from "./client.ts";
+import { PlatformClient, PlatformError } from "./client.ts";
 import { REMOTE_WORKSPACE } from "./constants.ts";
 
 /** Back-compat alias; prefer REMOTE_WORKSPACE from ./constants.ts. */
@@ -71,21 +71,26 @@ export function createPlatformBashOps(client: PlatformClient, containerId: numbe
   return {
     exec: (command, cwd, { onData, signal, timeout }) =>
       new Promise((resolve, reject) => {
+        // Live output: stream via SSE so chunks arrive in real time. If the
+        // platform predates the stream endpoint (404/405), fall back to the
+        // request/response bash and replay the collected output.
         client
-          .toolBash(containerId, command, { cwd, timeout })
-          .then((result) => {
-            if (result.stdout) onData?.(Buffer.from(result.stdout));
-            if (result.stderr) onData?.(Buffer.from(result.stderr));
-            resolve({ exitCode: result.timedOut ? null : result.exitCode });
-          })
-          .catch(reject);
-        // Note: the platform bash is request/response at this layer (the SSE
-        // stream endpoint exists for low-latency terminal use). Cancellation
-        // via signal is honored at the fetch layer; on abort the promise above
-        // rejects and pi treats it as a killed process.
-        signal?.addEventListener("abort", () => {
-          /* fetch abort handles rejection */
-        });
+          .toolBashStream(containerId, command, { cwd, timeout, signal, onData })
+          .then((result) => resolve({ exitCode: result.exitCode }))
+          .catch((err) => {
+            if (err instanceof PlatformError && (err.status === 404 || err.status === 405)) {
+              client
+                .toolBash(containerId, command, { cwd, timeout })
+                .then((result) => {
+                  if (result.stdout) onData?.(Buffer.from(result.stdout));
+                  if (result.stderr) onData?.(Buffer.from(result.stderr));
+                  resolve({ exitCode: result.timedOut ? null : result.exitCode });
+                })
+                .catch(reject);
+              return;
+            }
+            reject(err);
+          });
       }),
   };
 }
