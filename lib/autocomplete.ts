@@ -89,21 +89,28 @@ function isTokenStart(text: string, index: number): boolean {
   return index === 0 || PATH_DELIMITERS.has(text[index - 1] ?? "");
 }
 
-/** Extract the @-mention prefix at the cursor (includes the @), or null. */
+/** Extract the @-mention prefix at the cursor (includes the @), or null.
+ *  Mirrors pi-tui's extractAtPrefix: only `@...` or `@"...` tokens count —
+ *  plain unclosed quotes must NOT be treated as mentions. */
 export function extractAtPrefix(text: string): string | null {
-  const quoteStart = findUnclosedQuoteStart(text);
-  if (quoteStart !== null) {
-    if (quoteStart > 0 && text[quoteStart - 1] === "@") {
-      if (!isTokenStart(text, quoteStart - 1)) return null;
-      return text.slice(quoteStart - 1);
-    }
-    if (!isTokenStart(text, quoteStart)) return null;
-    return text.slice(quoteStart);
-  }
+  const quotedPrefix = extractQuotedPrefix(text);
+  if (quotedPrefix?.startsWith('@"')) return quotedPrefix;
   const lastDelimiterIndex = findLastDelimiter(text);
   const tokenStart = lastDelimiterIndex === -1 ? 0 : lastDelimiterIndex + 1;
   if (text[tokenStart] === "@") return text.slice(tokenStart);
   return null;
+}
+
+/** Unclosed-quote prefix, mirroring pi-tui's extractQuotedPrefix. */
+function extractQuotedPrefix(text: string): string | null {
+  const quoteStart = findUnclosedQuoteStart(text);
+  if (quoteStart === null) return null;
+  if (quoteStart > 0 && text[quoteStart - 1] === "@") {
+    if (!isTokenStart(text, quoteStart - 1)) return null;
+    return text.slice(quoteStart - 1);
+  }
+  if (!isTokenStart(text, quoteStart)) return null;
+  return text.slice(quoteStart);
 }
 
 /** Build the inserted value (mirrors buildCompletionValue in pi-tui). */
@@ -237,7 +244,26 @@ export function createContainerAutocompleteProvider(
     },
 
     applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
-      // Mirror the built-in @-attachment branch (packages/tui autocomplete.ts).
+      // OUR container-file completions carry an @-prefixed value (produced by
+      // buildCompletionValue). EVERYTHING else — slash commands (whose items
+      // carry NO leading "/", added by the built-in's isSlashCommand branch),
+      // command arguments, local paths — is delegated to the wrapped provider;
+      // mishandling those breaks e.g. "/sandbox-login" submitting as plain
+      // "sandbox-login".
+      if (item.value.startsWith("@")) {
+        return this.applyAtCompletion(lines, cursorLine, cursorCol, item, prefix);
+      }
+      return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
+    },
+
+    /** @-attachment insertion, mirroring the built-in branch. */
+    applyAtCompletion(
+      lines: string[],
+      cursorLine: number,
+      cursorCol: number,
+      item: AutocompleteItem,
+      prefix: string,
+    ): { lines: string[]; cursorLine: number; cursorCol: number } {
       const currentLine = lines[cursorLine] ?? "";
       const beforePrefix = currentLine.slice(0, cursorCol - prefix.length);
       const afterCursor = currentLine.slice(cursorCol);
