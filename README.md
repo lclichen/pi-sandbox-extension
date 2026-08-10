@@ -136,5 +136,9 @@ name.
   bars, logs, and long-running output appear as they are produced instead of
   after completion. If the platform predates the stream endpoint (404/405),
   the extension transparently falls back to request/response `bash`.
+- **Container-aware `@` completion**: while a container is connected, `@`
+  mentions in the prompt complete files **inside the container** (relative to
+  `/workspace`, or absolute when the prefix starts with `/`). Without a
+  connected container, `@` falls back to the built-in local-file completion.
 - The platform relays tool operations; see `../sandbox-platform` for the
   container lifecycle (create/start/stop/snapshot/restore) and admin APIs.

@@ -32,6 +32,7 @@ import {
   truncateHead,
 } from "@earendil-works/pi-coding-agent";
 import { makeClient, ensureAuthenticated, ensureContainer, getState, setState } from "./lib/auth.ts";
+import { createContainerAutocompleteProvider } from "./lib/autocomplete.ts";
 import {
   createPlatformBashOps,
   createPlatformEditOps,
@@ -69,6 +70,16 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     const { client, config } = makeClient(ctx.cwd);
     setState({ client, config, containerId: undefined, instanceName: undefined });
+    // `@` file completion reads container files when a container is connected
+    // (wraps the built-in local-fd provider; delegates when not connected).
+    ctx.ui.addAutocompleteProvider((current) =>
+      createContainerAutocompleteProvider(current, () => {
+        const st = getState();
+        return st && st.containerId !== undefined
+          ? { client: st.client, containerId: st.containerId }
+          : undefined;
+      }),
+    );
     if (!(await ensureAuthenticated(client, ctx))) return;
     const id = await ensureContainer(pi, ctx, client);
     if (id) ctx.ui.notify(`Sandbox connected: container ${id}.`, "info");
