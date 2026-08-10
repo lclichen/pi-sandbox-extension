@@ -95,6 +95,20 @@ export function createPlatformBashOps(client: PlatformClient, containerId: numbe
   };
 }
 
+/**
+ * Wrap bash operations so `exec` always runs in the container workspace root,
+ * ignoring the cwd pi passes in. pi's `user_bash` (`!`/`!!` commands) hands
+ * the LOCAL session cwd (a host path) to the operations — the platform would
+ * reject it as escaping the sandbox. The user's project lives at the
+ * container's /workspace, so commands run there.
+ */
+export function withContainerCwd(ops: BashOperations, remoteCwd = REMOTE_WORKSPACE): BashOperations {
+  return {
+    ...ops,
+    exec: (command, _cwd, options) => ops.exec(command, remoteCwd, options),
+  };
+}
+
 export function createPlatformLsOps(client: PlatformClient, containerId: number): LsOperations {
   return {
     exists: async (p) => client.toolAccess(containerId, stripAt(p)),

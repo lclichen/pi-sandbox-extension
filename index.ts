@@ -40,6 +40,7 @@ import {
   createPlatformLsOps,
   createPlatformReadOps,
   createPlatformWriteOps,
+  withContainerCwd,
   GUEST_WORKSPACE,
   platformFind,
   platformGrep,
@@ -225,11 +226,13 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // Route user `!`/`!!` shell commands into the container too.
+  // Route user `!`/`!!` shell commands into the container too. pi passes the
+  // LOCAL session cwd to these operations; pin it to the container workspace
+  // root instead (withContainerCwd), where the synced project lives.
   pi.on("user_bash", async (_event, ctx) => {
     const st = getState();
     if (!st?.containerId) return; // fall back to local
-    return { operations: createPlatformBashOps(st.client, st.containerId) };
+    return { operations: withContainerCwd(createPlatformBashOps(st.client, st.containerId)) };
   });
 
   // Rewrite the system prompt's cwd to the guest workspace when connected.
