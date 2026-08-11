@@ -20,13 +20,14 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { PlatformClient, PlatformError } from "./client.ts";
 import { REMOTE_WORKSPACE } from "./constants.ts";
+import { toContainerPath } from "./paths.ts";
 
 /** Back-compat alias; prefer REMOTE_WORKSPACE from ./constants.ts. */
 export { REMOTE_WORKSPACE as GUEST_WORKSPACE };
 
-function stripAt(p: string): string {
-  return p.startsWith("@") ? p.slice(1) : p;
-}
+/** Path handler for a platform ops factory: normalize pi's path shapes to
+ *  container-absolute, then strip a stray @ prefix. */
+type PathMapper = (p: string) => string;
 
 const IMAGE_MIME: Record<string, string> = {
   ".png": "image/png",
@@ -36,34 +37,59 @@ const IMAGE_MIME: Record<string, string> = {
   ".webp": "image/webp",
 };
 
-export function createPlatformReadOps(client: PlatformClient, containerId: number): ReadOperations {
+/**
+ * Normalize pi's tool path arguments to container-absolute paths before
+ * forwarding (see lib/paths.ts for why: on win32 pi's path.resolve mangles
+ * them into drive-absolute host paths the platform must reject). `localCwd`
+ * is the host project dir (maps to /workspace), used defensively when pi
+ * resolves against the real session cwd.
+ */
+export function pathMapper(localCwd: string | undefined): PathMapper {
+  return (p: string) => toContainerPath(p, localCwd);
+}
+
+export function createPlatformReadOps(
+  client: PlatformClient,
+  containerId: number,
+  localCwd?: string,
+): ReadOperations {
+  const map = pathMapper(localCwd);
   return {
-    readFile: (p) => client.toolRead(containerId, stripAt(p)),
+    readFile: (p) => client.toolRead(containerId, map(p)),
     access: async (p) => {
-      const exists = await client.toolAccess(containerId, stripAt(p));
+      const exists = await client.toolAccess(containerId, map(p));
       if (!exists) throw new Error(`No access: ${p}`);
     },
     detectImageMimeType: async (p) => {
-      const ext = extname(stripAt(p)).toLowerCase();
+      const ext = extname(map(p)).toLowerCase();
       return IMAGE_MIME[ext] ?? null;
     },
   };
 }
 
-export function createPlatformWriteOps(client: PlatformClient, containerId: number): WriteOperations {
+export function createPlatformWriteOps(
+  client: PlatformClient,
+  containerId: number,
+  localCwd?: string,
+): WriteOperations {
+  const map = pathMapper(localCwd);
   return {
-    writeFile: (p, content) => client.toolWrite(containerId, stripAt(p), Buffer.from(content, "utf8")),
+    writeFile: (p, content) => client.toolWrite(containerId, map(p), Buffer.from(content, "utf8")),
     mkdir: async (dir) => {
       // pi calls mkdir directly for some operations; the platform's writeFile
       // already creates parent dirs, but issue an explicit mkdir -p to be safe.
-      await client.toolBash(containerId, `mkdir -p ${JSON.stringify(stripAt(dir))}`);
+      await client.toolBash(containerId, `mkdir -p ${JSON.stringify(map(dir))}`);
     },
   };
 }
 
-export function createPlatformEditOps(client: PlatformClient, containerId: number): EditOperations {
-  const read = createPlatformReadOps(client, containerId);
-  const write = createPlatformWriteOps(client, containerId);
+export function createPlatformEditOps(
+  client: PlatformClient,
+  containerId: number,
+  localCwd?: string,
+): EditOperations {
+  const read = createPlatformReadOps(client, containerId, localCwd);
+  const write = createPlatformWriteOps(client, containerId, localCwd);
   return { readFile: read.readFile, writeFile: write.writeFile, access: read.access };
 }
 
@@ -109,16 +135,21 @@ export function withContainerCwd(ops: BashOperations, remoteCwd = REMOTE_WORKSPA
   };
 }
 
-export function createPlatformLsOps(client: PlatformClient, containerId: number): LsOperations {
+export function createPlatformLsOps(
+  client: PlatformClient,
+  containerId: number,
+  localCwd?: string,
+): LsOperations {
+  const map = pathMapper(localCwd);
   return {
-    exists: async (p) => client.toolAccess(containerId, stripAt(p)),
+    exists: async (p) => client.toolAccess(containerId, map(p)),
     stat: async (p) => {
       // pi's LsOperations.stat expects { isDirectory: () => boolean }.
-      const s = await client.toolStat(containerId, stripAt(p));
+      const s = await client.toolStat(containerId, map(p));
       return { isDirectory: () => s.isDirectory };
     },
     readdir: async (dir) => {
-      const entries = await client.toolLs(containerId, stripAt(dir) || ".");
+      const entries = await client.toolLs(containerId, map(dir || "."));
       return entries.map((e) => e.name);
     },
   };
@@ -137,16 +168,24 @@ export async function platformGrep(
     context?: number;
     limit?: number;
   },
+  localCwd?: string,
 ): Promise<string> {
-  return client.toolGrep(containerId, params);
+  return client.toolGrep(containerId, {
+    ...params,
+    path: params.path ? toContainerPath(params.path, localCwd) : undefined,
+  });
 }
 
 export async function platformFind(
   client: PlatformClient,
   containerId: number,
   params: { pattern: string; path?: string; limit?: number },
+  localCwd?: string,
 ): Promise<string[]> {
-  return client.toolFind(containerId, params);
+  return client.toolFind(containerId, {
+    ...params,
+    path: params.path ? toContainerPath(params.path, localCwd) : undefined,
+  });
 }
 
 // Re-export basename for callers that format paths.

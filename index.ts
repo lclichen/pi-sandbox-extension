@@ -58,7 +58,10 @@ export default function (pi: ExtensionAPI) {
 
   // Hold local tool instances so we can fall back to host execution when no
   // container is connected (lets the extension load harmlessly offline).
-  const localCwd = process.cwd();
+  // The real session cwd arrives at session_start (ctx.cwd); until then use
+  // the process cwd (pi is usually launched from the project dir).
+  let sessionCwd = process.cwd();
+  const localCwd = sessionCwd;
   const localRead = createReadTool(localCwd);
   const localWrite = createWriteTool(localCwd);
   const localEdit = createEditTool(localCwd);
@@ -69,7 +72,8 @@ export default function (pi: ExtensionAPI) {
 
   // Resolve the client/container on session_start so the first user prompt can
   // use the routed tools.
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
+    sessionCwd = ctx.cwd;
     const { client, config } = makeClient(ctx.cwd);
     setState({ client, config, containerId: undefined, instanceName: undefined });
     // `@` file completion reads container files when a container is connected
@@ -109,10 +113,10 @@ export default function (pi: ExtensionAPI) {
       const cid = await activeContainerId(ctx);
       if (!cid) {
         // Offline fallback: container-style paths map to the local project.
-        return localRead.execute(id, { ...params, path: containerPathToLocal(params.path, localCwd) }, signal, onUpdate);
+        return localRead.execute(id, { ...params, path: containerPathToLocal(params.path, sessionCwd) }, signal, onUpdate);
       }
       const tool = createReadTool(GUEST_WORKSPACE, {
-        operations: createPlatformReadOps(getState()!.client, cid),
+        operations: createPlatformReadOps(getState()!.client, cid, sessionCwd),
       });
       return tool.execute(id, params, signal, onUpdate);
     },
@@ -123,10 +127,10 @@ export default function (pi: ExtensionAPI) {
     async execute(id, params, signal, onUpdate, ctx) {
       const cid = await activeContainerId(ctx);
       if (!cid) {
-        return localWrite.execute(id, { ...params, path: containerPathToLocal(params.path, localCwd) }, signal, onUpdate);
+        return localWrite.execute(id, { ...params, path: containerPathToLocal(params.path, sessionCwd) }, signal, onUpdate);
       }
       const tool = createWriteTool(GUEST_WORKSPACE, {
-        operations: createPlatformWriteOps(getState()!.client, cid),
+        operations: createPlatformWriteOps(getState()!.client, cid, sessionCwd),
       });
       return tool.execute(id, params, signal, onUpdate);
     },
@@ -137,10 +141,10 @@ export default function (pi: ExtensionAPI) {
     async execute(id, params, signal, onUpdate, ctx) {
       const cid = await activeContainerId(ctx);
       if (!cid) {
-        return localEdit.execute(id, { ...params, path: containerPathToLocal(params.path, localCwd) }, signal, onUpdate);
+        return localEdit.execute(id, { ...params, path: containerPathToLocal(params.path, sessionCwd) }, signal, onUpdate);
       }
       const tool = createEditTool(GUEST_WORKSPACE, {
-        operations: createPlatformEditOps(getState()!.client, cid),
+        operations: createPlatformEditOps(getState()!.client, cid, sessionCwd),
       });
       return tool.execute(id, params, signal, onUpdate);
     },
@@ -163,10 +167,10 @@ export default function (pi: ExtensionAPI) {
     async execute(id, params, signal, onUpdate, ctx) {
       const cid = await activeContainerId(ctx);
       if (!cid) {
-        return localLs.execute(id, { ...params, path: containerPathToLocal(params.path, localCwd) }, signal, onUpdate);
+        return localLs.execute(id, { ...params, path: containerPathToLocal(params.path, sessionCwd) }, signal, onUpdate);
       }
       const tool = createLsTool(GUEST_WORKSPACE, {
-        operations: createPlatformLsOps(getState()!.client, cid),
+        operations: createPlatformLsOps(getState()!.client, cid, sessionCwd),
       });
       return tool.execute(id, params, signal, onUpdate);
     },
@@ -179,7 +183,7 @@ export default function (pi: ExtensionAPI) {
       if (!cid) {
         return localFind.execute(
           id,
-          { ...params, path: containerPathToLocal(params.path ?? ".", localCwd) },
+          { ...params, path: containerPathToLocal(params.path ?? ".", sessionCwd) },
           signal,
           onUpdate,
         );
@@ -189,7 +193,7 @@ export default function (pi: ExtensionAPI) {
         pattern: params.pattern,
         path: params.path,
         limit: params.limit,
-      });
+      }, sessionCwd);
       const { content } = truncateHead(results.join("\n"));
       return {
         content: [{ type: "text", text: content || "No matches" }],
@@ -204,7 +208,7 @@ export default function (pi: ExtensionAPI) {
       if (!cid) {
         return localGrep.execute(
           _id,
-          { ...params, path: containerPathToLocal(params.path ?? ".", localCwd) },
+          { ...params, path: containerPathToLocal(params.path ?? ".", sessionCwd) },
           _signal,
           _onUpdate,
         );
@@ -218,7 +222,7 @@ export default function (pi: ExtensionAPI) {
         ignoreCase: params.ignoreCase,
         context: params.context,
         limit: params.limit,
-      });
+      }, sessionCwd);
       const { content } = truncateHead(output);
       return {
         content: [{ type: "text", text: content || "No matches found" }],
@@ -239,7 +243,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("before_agent_start", async (event, ctx) => {
     const st = getState();
     if (!st?.containerId) return;
-    const localLine = `Current working directory: ${localCwd}`;
+    const localLine = `Current working directory: ${sessionCwd}`;
     const guestLine = `Current working directory: ${GUEST_WORKSPACE} (sandbox platform container ${st.containerId}; platform ${st.client.url})`;
     const systemPrompt = event.systemPrompt.includes(localLine)
       ? event.systemPrompt.replace(localLine, guestLine)

@@ -152,7 +152,13 @@ export async function suggestContainerFiles(
   const maxResults = opts.maxResults ?? MAX_SUGGESTIONS;
   const workspaceRoot = opts.workspaceRoot ?? "/workspace";
   const absolute = rawPrefix.startsWith("/");
-  const cleaned = rawPrefix.replace(/^\/+/, "");
+  let cleaned = rawPrefix.replace(/^\/+/, "");
+  // In workspace-relative mode a typed "workspace/..." prefix refers to the
+  // workspace root itself (the same convention read/write use); strip it so
+  // the listing starts at /workspace, not /workspace/workspace.
+  if (!absolute && (cleaned === "workspace" || cleaned.startsWith("workspace/"))) {
+    cleaned = cleaned.slice("workspace".length);
+  }
   const slashIdx = cleaned.lastIndexOf("/");
   const dirPart = slashIdx === -1 ? "" : cleaned.slice(0, slashIdx);
   const basePart = slashIdx === -1 ? cleaned : cleaned.slice(slashIdx + 1);
