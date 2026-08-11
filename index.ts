@@ -30,8 +30,10 @@ import {
   createWriteTool,
   type GrepToolInput,
   truncateHead,
+  type BeforeProviderRequestEvent,
 } from "@earendil-works/pi-coding-agent";
 import { makeClient, ensureAuthenticated, ensureContainer, getState, setState } from "./lib/auth.ts";
+import { ensureLlmProvider, providerNameForSessionTracking } from "./lib/llm.ts";
 import { createContainerAutocompleteProvider } from "./lib/autocomplete.ts";
 import { containerPathToLocal } from "./lib/paths.ts";
 import {
@@ -70,6 +72,31 @@ export default function (pi: ExtensionAPI) {
   const localFind = createFindTool(localCwd);
   const localGrep = createGrepTool(localCwd);
 
+  // add session_id key for tracking. Applies to whichever LLM provider this
+  // extension registered (default "amedac.ai"), plus the bare "litellm" name
+  // for setups that register under that name.
+  pi.on(
+    "before_provider_request",
+    (event: BeforeProviderRequestEvent, ctx: ExtensionContext) => {
+      const payload = event.payload as Record<string, unknown>;
+      if (!payload) return;
+
+      const provider = ctx.model?.provider;
+      if (!provider || !providerNameForSessionTracking().has(provider)) return payload;
+
+      const sessionId = ctx.sessionManager?.getSessionId();
+      if (!sessionId) {
+        console.warn("missing session id");
+        return payload;
+      }
+
+      return {
+        ...payload,
+        litellm_session_id: sessionId,
+      };
+    },
+  );
+
   // Resolve the client/container on session_start so the first user prompt can
   // use the routed tools.
   pi.on("session_start", async (event, ctx) => {
@@ -87,6 +114,11 @@ export default function (pi: ExtensionAPI) {
       }),
     );
     if (!(await ensureAuthenticated(client, ctx))) return;
+    // Auto-provision the LLM provider (LiteLLM virtual key) in the background.
+    // Failures here must NOT block the container/tools flow — LLM is optional.
+    void ensureLlmProvider(pi, ctx, client).catch((err) => {
+      console.warn(`[sandbox-platform] LLM provider setup failed: ${err}`);
+    });
     const id = await ensureContainer(pi, ctx, client);
     if (id) ctx.ui.notify(`Sandbox connected: container ${id}.`, "info");
   });

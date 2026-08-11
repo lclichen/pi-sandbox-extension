@@ -4,6 +4,12 @@
   "description": "pi CLI extension: connect to the sandbox platform and route built-in tools into an Apptainer container",
   "type": "module",
   "private": true,
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
   "pi": {
     "extensions": ["./index.ts"]
   }

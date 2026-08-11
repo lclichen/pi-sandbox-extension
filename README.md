@@ -61,6 +61,16 @@ Create `~/.pi/agent/extensions/sandbox-platform.json`:
 }
 ```
 
+This file stores your JWT, refresh token, API key, and (when LLM is enabled)
+the LiteLLM virtual key plaintext after login. The extension writes it with
+mode `0600`; on a shared POSIX host, also ensure the parent directory is
+`0700`:
+
+```bash
+chmod 700 ~/.pi/agent/extensions
+chmod 600 ~/.pi/agent/extensions/sandbox-platform.json
+```
+
 Environment variable overrides (highest precedence):
 
 | Variable                      | Purpose                                   |
@@ -116,6 +126,7 @@ Project-local override: `<cwd>/.pi/sandbox-platform.json`.
 | `/sandbox-sync`   | Upload the local project into the container's `/workspace` |
 | `/sandbox-url`    | Print the configured platform URL                        |
 | `/sandbox-apikey` | Manage long-lived API keys (create / list / revoke / use)|
+| `/sandbox-llm`    | Check / refresh the auto-provisioned LLM provider (LiteLLM)|
 
 ## Auto-provisioning
 
@@ -133,6 +144,55 @@ local project into the container's `/workspace` — skipping `.git`,
 `node_modules`, `dist`, `build`, virtualenvs and files over 8MB — so the
 agent inside the container works on the same files you see locally. Re-run
 `/sandbox-sync` after local changes to refresh the container copy.
+
+## LLM provider auto-provisioning (LiteLLM)
+
+When the platform's LLM integration is enabled, the extension wires up the
+agent's LLM provider **automatically** after login — you never have to copy a
+virtual key by hand. On each `session_start` (after `/sandbox-login`):
+
+1. The extension calls `GET /api/v1/llm/me`. If you haven't been granted LLM
+   access (or the platform hasn't enabled LLM at all), it skips silently — the
+   container/tools flow is unaffected.
+2. If access is granted, it fetches (or reuses a cached) LiteLLM virtual key
+   via `POST /api/v1/llm/me/keys/:id/reveal`, the base URL via
+   `GET /api/v1/llm/me/endpoint`, and the model catalogue via
+   `GET /api/v1/llm/models`.
+3. It registers the provider with pi via `pi.registerProvider()` under the
+   configured name (default `amedac.ai`). The model then appears in pi's
+   `/model` selector.
+
+The resolved virtual key + endpoint are cached in
+`~/.pi/agent/extensions/sandbox-platform.json` so subsequent starts skip the
+network round-trip. Session tracking is preserved: every LLM request carries
+`litellm_session_id` (the pi session id), so spend is grouped per pi session
+on the LiteLLM side.
+
+### Manual control
+
+| Command        | Description                                                       |
+|----------------|-------------------------------------------------------------------|
+| `/sandbox-llm` | Show LLM status (budget, models, cached key) and re-register or force-refresh the provider |
+
+Force-refresh clears the cached key and re-reveals a fresh one — use it after
+an admin rotates your key or newly grants access. If you have no active key,
+the extension notifies you to ask an admin to issue one (or create it from the
+web UI).
+
+### Configuration
+
+The provider name defaults to `amedac.ai`; override it in the config file:
+
+```json
+{
+  "url": "https://sandbox.corp.com",
+  "llmProvider": "my-litellm"
+}
+```
+
+The platform's `LITELLM_PUBLIC_BASE_URL` (e.g. `http://172.18.50.126:4000`)
+becomes the provider's `baseUrl`; the extension appends `/v1` if missing. See
+`../sandbox-platform/litellm/README.md` for platform-side setup.
 
 ## Notes
 

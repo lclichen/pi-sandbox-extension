@@ -8,12 +8,14 @@
  *   /sandbox-sync    upload the local project into the container's /workspace
  *   /sandbox-url     print the configured platform URL
  *   /sandbox-apikey  manage long-lived API keys (create / list / revoke / use)
+ *   /sandbox-llm     check / refresh the auto-provisioned LLM provider (LiteLLM)
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { makeClient, ensureAuthenticated, getState, setState } from "./auth.ts";
 import { PlatformError } from "./client.ts";
 import { saveConfig } from "./config.ts";
 import { syncWorkspaceToContainer } from "./sync.ts";
+import { ensureLlmProvider, refreshLlmProvider } from "./llm.ts";
 
 export function registerCommands(pi: ExtensionAPI): void {
   pi.registerCommand("sandbox-login", {
@@ -179,6 +181,68 @@ export function registerCommands(pi: ExtensionAPI): void {
         }
       } catch (err) {
         ctx.ui.notify(`Failed: ${err instanceof Error ? err.message : String(err)}`, "error");
+      }
+    },
+  });
+
+  pi.registerCommand("sandbox-llm", {
+    description: "Check or refresh the auto-provisioned LLM provider (LiteLLM)",
+    handler: async (_args, ctx) => {
+      const { client, config } = makeClient(ctx.cwd);
+      if (!(await ensureAuthenticated(client, ctx))) return;
+
+      // Show current status first.
+      let statusLines: string[];
+      try {
+        const status = await client.getMyLlmStatus();
+        if (!status.binding || status.binding.revoked_at) {
+          ctx.ui.notify(
+            "LLM: no access granted on the platform. Ask an admin to enable it, then run /sandbox-llm again.",
+            "info",
+          );
+          return;
+        }
+        const spend = status.litellm?.spend ?? 0;
+        statusLines = [
+          `Provider: ${config.llmProvider ?? "amedac.ai"}`,
+          `Budget: $${spend.toFixed(4)} / $${status.binding.max_budget.toFixed(2)} (${status.binding.budget_duration ?? "no reset"})`,
+          `Models: ${status.binding.models ? status.binding.models.join(", ") : "all"}`,
+          `Cached key: ${config.llmVirtualKey ? `${config.llmVirtualKey.slice(0, 12)}… (id ${config.llmKeyId ?? "?"})` : "(none — will reveal on refresh)"}`,
+          `Endpoint: ${config.llmEndpoint ?? "(not fetched yet)"}`,
+        ];
+      } catch (err) {
+        if (err instanceof PlatformError && err.status === 503) {
+          ctx.ui.notify("LLM integration is not enabled on this platform.", "warning");
+          return;
+        }
+        ctx.ui.notify(`LLM status check failed: ${err instanceof Error ? err.message : String(err)}`, "error");
+        return;
+      }
+
+      const action = await ctx.ui.select(`LLM status — ${statusLines.join(" | ")}`, [
+        "Re-register provider (use cached key)",
+        "Force refresh (clear cache + re-reveal key)",
+      ]);
+      if (!action) return;
+
+      try {
+        if (action === "Re-register provider (use cached key)") {
+          const res = await ensureLlmProvider(pi, ctx, client);
+          if (res.ok) {
+            ctx.ui.notify(`LLM provider "${res.provider}" registered (${res.modelCount} models). Use /model to select.`, "info");
+          } else {
+            ctx.ui.notify(`LLM setup skipped: ${res.reason ?? "unknown"}`, "warning");
+          }
+        } else {
+          const res = await refreshLlmProvider(pi, ctx, client);
+          if (res.ok) {
+            ctx.ui.notify(`LLM provider refreshed: "${res.provider}" (${res.modelCount} models). Use /model to select.`, "info");
+          } else {
+            ctx.ui.notify(`LLM refresh skipped: ${res.reason ?? "unknown"}`, "warning");
+          }
+        }
+      } catch (err) {
+        ctx.ui.notify(`LLM setup failed: ${err instanceof Error ? err.message : String(err)}`, "error");
       }
     },
   });
