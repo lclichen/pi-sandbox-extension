@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "pi CLI extension: connect to the sandbox platform and route built-in tools into an Apptainer container",
   "type": "module",
+  "license": "MIT",
   "private": true,
   "engines": {
     "node": ">=20.11.0"
