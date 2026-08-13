@@ -303,12 +303,15 @@ export function registerCommands(pi: ExtensionAPI): void {
             ctx.ui.setStatus("sandbox", `Sandbox: syncing ${index}/${total} ${rel}`),
         });
         const mb = (result.bytes / (1024 * 1024)).toFixed(1);
-        ctx.ui.notify(
+        // Distinguish "uploaded N changed" from "M unchanged (skipped)" so a
+        // re-sync with no edits reads clearly instead of "Synced 0 files".
+        const uploaded =
           result.failures.length > 0
             ? `Synced ${result.files} files (${mb}MB); ${result.failures.length} failed.`
-            : `Synced ${result.files} files (${mb}MB) into /workspace.`,
-          result.failures.length > 0 ? "warning" : "info",
-        );
+            : result.unchanged > 0
+              ? `Synced ${result.files} changed (${mb}MB); ${result.unchanged} unchanged.`
+              : `Synced ${result.files} files (${mb}MB) into /workspace.`;
+        ctx.ui.notify(uploaded, result.failures.length > 0 ? "warning" : "info");
       } catch (err) {
         ctx.ui.notify(`Sync failed: ${err instanceof Error ? err.message : String(err)}`, "error");
       }

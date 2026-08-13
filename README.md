@@ -145,6 +145,12 @@ local project into the container's `/workspace` — skipping `.git`,
 agent inside the container works on the same files you see locally. Re-run
 `/sandbox-sync` after local changes to refresh the container copy.
 
+Sync is **incremental**: a per-project manifest (`.pi/sandbox-sync.json`)
+records each file's size + mtime, so re-running `/sandbox-sync` only uploads
+files that actually changed — unchanged files are skipped. Switching to a
+different container forces a full re-sync automatically. (Deletion is not
+propagated; remove files in the container directly if needed.)
+
 ## LLM provider auto-provisioning (LiteLLM)
 
 When the platform's LLM integration is enabled, the extension wires up the
