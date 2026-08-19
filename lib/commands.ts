@@ -31,7 +31,7 @@ export function registerCommands(pi: ExtensionAPI): void {
       try {
         await client.login(username, password);
         const me = await client.me();
-        setState({ client, config, containerId: undefined, instanceName: undefined });
+        setState({ client, config, containerId: undefined, instanceName: undefined }, ctx.cwd);
         ctx.ui.setStatus("sandbox", ctx.ui.theme.fg("accent", `Sandbox: logged in as ${me.username}`));
         ctx.ui.notify(
           [`Logged in as ${me.username} (${me.role}).`, "Credentials saved — you won't need to log in again for 7 days."].join("\n"),
@@ -48,7 +48,7 @@ export function registerCommands(pi: ExtensionAPI): void {
   pi.registerCommand("sandbox-status", {
     description: "Show sandbox platform connection status",
     handler: async (_args, ctx) => {
-      const st = getState();
+      const st = getState(ctx.cwd);
       if (!st) {
         ctx.ui.notify("Not connected. Run /sandbox-login.", "info");
         return;
@@ -95,7 +95,7 @@ export function registerCommands(pi: ExtensionAPI): void {
         if (!choice) return;
         const id = Number.parseInt(choice.split(":")[0], 10);
         // Defer to ensureContainer by setting the flag-like state.
-        const cur = getState();
+        const cur = getState(ctx.cwd);
         if (cur) {
           const info = await client.connectContainer(id);
           cur.containerId = id;
@@ -137,7 +137,7 @@ export function registerCommands(pi: ExtensionAPI): void {
           const created = await client.createApiKey(name);
           // Persist it so subsequent invocations authenticate without login.
           saveConfig({ apiKey: created.key });
-          getState()?.client && (getState()!.client.config.apiKey = created.key);
+          getState(ctx.cwd)?.client && (getState(ctx.cwd)!.client.config.apiKey = created.key);
           ctx.ui.notify(
             [`API key created (shown once — store it now):`, created.key, `prefix: ${created.key_prefix}`].join("\n"),
             "info",
@@ -167,7 +167,7 @@ export function registerCommands(pi: ExtensionAPI): void {
           if (!target) return;
           await client.revokeApiKey(target.id);
           // If the revoked key is the one in use, clear it.
-          if (getState()?.client.config.apiKey?.endsWith(target.key_prefix.slice(3))) {
+          if (getState(ctx.cwd)?.client.config.apiKey?.endsWith(target.key_prefix.slice(3))) {
             saveConfig({ apiKey: undefined });
           }
           ctx.ui.notify("Key revoked.", "info");
@@ -175,7 +175,7 @@ export function registerCommands(pi: ExtensionAPI): void {
           const key = (await ctx.ui.input("Paste API key (sk_...):"))?.trim();
           if (!key) return;
           saveConfig({ apiKey: key });
-          const st = getState();
+          const st = getState(ctx.cwd);
           if (st) st.client.config.apiKey = key;
           ctx.ui.notify("API key saved. It will be used for all platform calls.", "info");
         }
@@ -211,7 +211,7 @@ export function registerCommands(pi: ExtensionAPI): void {
           `Endpoint: ${config.llmEndpoint ?? "(not fetched yet)"}`,
         ];
       } catch (err) {
-        if (err instanceof PlatformError && err.status === 503) {
+        if (err instanceof PlatformError && (err.status === 501 || err.status === 503)) {
           ctx.ui.notify("LLM integration is not enabled on this platform.", "warning");
           return;
         }
@@ -274,7 +274,7 @@ export function registerCommands(pi: ExtensionAPI): void {
           memoryMb: image.default_resources?.memoryMb,
           diskGb: image.default_resources?.diskGb,
         });
-        const cur = getState();
+        const cur = getState(ctx.cwd);
         if (cur) {
           const info = await client.connectContainer(created.id);
           cur.containerId = created.id;
@@ -291,7 +291,7 @@ export function registerCommands(pi: ExtensionAPI): void {
   pi.registerCommand("sandbox-sync", {
     description: "Upload the local project into the container's /workspace",
     handler: async (_args, ctx) => {
-      const st = getState();
+      const st = getState(ctx.cwd);
       if (!st?.containerId) {
         ctx.ui.notify("No container connected. Run /sandbox-list or /sandbox-new first.", "warning");
         return;

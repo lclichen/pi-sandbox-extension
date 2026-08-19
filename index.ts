@@ -102,12 +102,12 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (event, ctx) => {
     sessionCwd = ctx.cwd;
     const { client, config } = makeClient(ctx.cwd);
-    setState({ client, config, containerId: undefined, instanceName: undefined });
+    setState({ client, config, containerId: undefined, instanceName: undefined }, sessionCwd);
     // `@` file completion reads container files when a container is connected
     // (wraps the built-in local-fd provider; delegates when not connected).
     ctx.ui.addAutocompleteProvider((current) =>
       createContainerAutocompleteProvider(current, () => {
-        const st = getState();
+        const st = getState(sessionCwd);
         return st && st.containerId !== undefined
           ? { client: st.client, containerId: st.containerId }
           : undefined;
@@ -124,12 +124,12 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async () => {
-    setState(undefined);
+    setState(undefined, sessionCwd);
   });
 
   // Helper: resolve the active container id, or null to fall back to host.
   async function activeContainerId(ctx: ExtensionContext): Promise<number | null> {
-    const st = getState();
+    const st = getState(sessionCwd);
     if (!st) return null;
     if (st.containerId) return st.containerId;
     if (!(await ensureAuthenticated(st.client, ctx))) return null;
@@ -148,7 +148,7 @@ export default function (pi: ExtensionAPI) {
         return localRead.execute(id, { ...params, path: containerPathToLocal(params.path, sessionCwd) }, signal, onUpdate);
       }
       const tool = createReadTool(GUEST_WORKSPACE, {
-        operations: createPlatformReadOps(getState()!.client, cid, sessionCwd),
+        operations: createPlatformReadOps(getState(sessionCwd)!.client, cid, sessionCwd),
       });
       return tool.execute(id, params, signal, onUpdate);
     },
@@ -162,7 +162,7 @@ export default function (pi: ExtensionAPI) {
         return localWrite.execute(id, { ...params, path: containerPathToLocal(params.path, sessionCwd) }, signal, onUpdate);
       }
       const tool = createWriteTool(GUEST_WORKSPACE, {
-        operations: createPlatformWriteOps(getState()!.client, cid, sessionCwd),
+        operations: createPlatformWriteOps(getState(sessionCwd)!.client, cid, sessionCwd),
       });
       return tool.execute(id, params, signal, onUpdate);
     },
@@ -176,7 +176,7 @@ export default function (pi: ExtensionAPI) {
         return localEdit.execute(id, { ...params, path: containerPathToLocal(params.path, sessionCwd) }, signal, onUpdate);
       }
       const tool = createEditTool(GUEST_WORKSPACE, {
-        operations: createPlatformEditOps(getState()!.client, cid, sessionCwd),
+        operations: createPlatformEditOps(getState(sessionCwd)!.client, cid, sessionCwd),
       });
       return tool.execute(id, params, signal, onUpdate);
     },
@@ -188,7 +188,7 @@ export default function (pi: ExtensionAPI) {
       const cid = await activeContainerId(ctx);
       if (!cid) return localBash.execute(id, params, signal, onUpdate);
       const tool = createBashTool(GUEST_WORKSPACE, {
-        operations: createPlatformBashOps(getState()!.client, cid),
+        operations: createPlatformBashOps(getState(sessionCwd)!.client, cid),
       });
       return tool.execute(id, params, signal, onUpdate);
     },
@@ -202,7 +202,7 @@ export default function (pi: ExtensionAPI) {
         return localLs.execute(id, { ...params, path: containerPathToLocal(params.path, sessionCwd) }, signal, onUpdate);
       }
       const tool = createLsTool(GUEST_WORKSPACE, {
-        operations: createPlatformLsOps(getState()!.client, cid, sessionCwd),
+        operations: createPlatformLsOps(getState(sessionCwd)!.client, cid, sessionCwd),
       });
       return tool.execute(id, params, signal, onUpdate);
     },
@@ -220,7 +220,7 @@ export default function (pi: ExtensionAPI) {
           onUpdate,
         );
       }
-      const st = getState()!;
+      const st = getState(sessionCwd)!;
       const results = await platformFind(st.client, cid, {
         pattern: params.pattern,
         path: params.path,
@@ -245,7 +245,7 @@ export default function (pi: ExtensionAPI) {
           _onUpdate,
         );
       }
-      const st = getState()!;
+      const st = getState(sessionCwd)!;
       const output = await platformGrep(st.client, cid, {
         pattern: params.pattern,
         path: params.path,
@@ -266,14 +266,14 @@ export default function (pi: ExtensionAPI) {
   // LOCAL session cwd to these operations; pin it to the container workspace
   // root instead (withContainerCwd), where the synced project lives.
   pi.on("user_bash", async (_event, ctx) => {
-    const st = getState();
+    const st = getState(sessionCwd);
     if (!st?.containerId) return; // fall back to local
     return { operations: withContainerCwd(createPlatformBashOps(st.client, st.containerId)) };
   });
 
   // Rewrite the system prompt's cwd to the guest workspace when connected.
   pi.on("before_agent_start", async (event, ctx) => {
-    const st = getState();
+    const st = getState(sessionCwd);
     if (!st?.containerId) return;
     const localLine = `Current working directory: ${sessionCwd}`;
     const guestLine = `Current working directory: ${GUEST_WORKSPACE} (sandbox platform container ${st.containerId}; platform ${st.client.url})`;
@@ -286,7 +286,7 @@ export default function (pi: ExtensionAPI) {
   // Keep a persistent visible indicator that tool calls run in the remote
   // container, refreshed every turn so it never disappears during a session.
   pi.on("turn_start", async (_event, ctx) => {
-    const st = getState();
+    const st = getState(sessionCwd);
     if (!st?.containerId) return;
     ctx.ui.setStatus(
       "sandbox",

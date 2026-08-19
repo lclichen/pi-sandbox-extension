@@ -15,8 +15,9 @@
  *   4. GET /llm/models      -> model catalogue
  *   5. pi.registerProvider(llmProvider, { baseUrl, apiKey, api, models })
  *
- * When LLM is not enabled on the platform (503) or the user has no binding,
- * this returns false without noise — the container/tools flow is unaffected.
+ * When LLM is not enabled on the platform (501 LLM_NOT_ENABLED; legacy
+ * deployments may answer 503) or the user has no binding, this returns false
+ * without noise — the container/tools flow is unaffected.
  */
 import type { ExtensionAPI, ExtensionContext, ProviderConfig, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import { PlatformClient, PlatformError } from "./client.ts";
@@ -34,11 +35,11 @@ function providerName(config: PlatformConfig): string {
  * actually-loaded config; before a session starts, falls back to the documented
  * default. Always includes the bare "litellm" alias for compatibility.
  *
- * Reads ONLY from getState() — never calls loadConfig — so it cannot poison the
+ * Reads ONLY from getState(undefined) — never calls loadConfig — so it cannot poison the
  * cwd-sensitive config cache that session_start owns.
  */
 export function providerNameForSessionTracking(): ReadonlySet<string> {
-  const name = getState()?.config.llmProvider ?? "amedac.ai";
+  const name = getState(undefined)?.config.llmProvider ?? "amedac.ai";
   return new Set([name, "litellm"]);
 }
 
@@ -93,12 +94,14 @@ export async function ensureLlmProvider(
   const config = client.config;
   const name = providerName(config);
 
-  // 1. Is LLM enabled for me at all?
+  // 1. Is LLM enabled for me at all? R4: a platform without the gateway answers
+  //    501 LLM_NOT_ENABLED (legacy: 503). Both mean "feature absent" — skip
+  //    silently, no notification, no blocking of session start.
   let status: Awaited<ReturnType<PlatformClient["getMyLlmStatus"]>>;
   try {
     status = await client.getMyLlmStatus();
   } catch (err) {
-    if (err instanceof PlatformError && err.status === 503) {
+    if (err instanceof PlatformError && (err.status === 501 || err.status === 503)) {
       // LLM integration disabled on the platform — not an error, just nothing to do.
       return { ok: false, reason: "not_enabled" };
     }

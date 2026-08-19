@@ -18,14 +18,29 @@ export interface ConnectionState {
   instanceName: string | undefined;
 }
 
-let state: ConnectionState | undefined;
+// Per-cwd states: embedding hosts (pi-web) run one session per user in a
+// single process, each with its own project cwd and credentials.
+const states = new Map<string, ConnectionState>();
 
-export function getState(): ConnectionState | undefined {
-  return state;
+function key(cwd: string): string {
+  try {
+    return require("node:path").resolve(cwd).toLowerCase();
+  } catch {
+    return String(cwd).toLowerCase();
+  }
 }
 
-export function setState(next: ConnectionState | undefined): void {
-  state = next;
+export function getState(cwd?: string): ConnectionState | undefined {
+  if (cwd) return states.get(key(cwd));
+  // No cwd (legacy callers): the only/first state — single-session CLI keeps
+  // working unchanged.
+  return states.values().next().value;
+}
+
+export function setState(next: ConnectionState | undefined, cwd?: string): void {
+  const k = key(cwd ?? "");
+  if (next) states.set(k, next);
+  else states.delete(k);
 }
 
 /** Build a client from config (no I/O). */
@@ -62,7 +77,8 @@ export async function ensureContainer(
   ctx: ExtensionContext,
   client: PlatformClient,
 ): Promise<number | undefined> {
-  if (state?.containerId) return state.containerId;
+  const existing = states.get(key(ctx.cwd));
+  if (existing?.containerId) return existing.containerId;
 
   const config = client.config;
   // 1. CLI flag wins.
@@ -146,6 +162,7 @@ async function setContainer(
 ): Promise<number> {
   try {
     const info = await client.connectContainer(id);
+    const state = states.get(key(ctx.cwd));
     if (!state) throw new Error("Connection state missing");
     state.containerId = id;
     state.instanceName = info.instanceName;
