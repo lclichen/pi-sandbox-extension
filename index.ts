@@ -20,6 +20,8 @@
  *   cp -R pi-sandbox-extension ~/.pi/agent/extensions/pi-sandbox-extension
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import {
   createBashTool,
   createEditTool,
@@ -164,7 +166,11 @@ export default function (pi: ExtensionAPI) {
       const tool = createWriteTool(GUEST_WORKSPACE, {
         operations: createPlatformWriteOps(getState(sessionCwd)!.client, cid, sessionCwd),
       });
-      return tool.execute(id, params, signal, onUpdate);
+      const result = await tool.execute(id, params, signal, onUpdate);
+      if (!result.isError && isInstructionsPath(params.path)) {
+        await mirrorInstructionsContent(params.content, sessionCwd);
+      }
+      return result;
     },
   });
 
@@ -178,9 +184,42 @@ export default function (pi: ExtensionAPI) {
       const tool = createEditTool(GUEST_WORKSPACE, {
         operations: createPlatformEditOps(getState(sessionCwd)!.client, cid, sessionCwd),
       });
-      return tool.execute(id, params, signal, onUpdate);
+      const result = await tool.execute(id, params, signal, onUpdate);
+      if (!result.isError && isInstructionsPath(params.path)) {
+        // Mirror the edited file back verbatim via the raw platform read ops
+        // (tool-level reads carry line numbers; ops do not).
+        try {
+          const raw = await createPlatformReadOps(getState(sessionCwd)!.client, cid, sessionCwd).readFile(params.path);
+          await mirrorInstructionsContent(raw.toString("utf8"), sessionCwd);
+        } catch {
+          // best-effort mirror
+        }
+      }
+      return result;
     },
   });
+
+  /** Workspace-root instruction files that must stay mirrored to the local
+   *  project directory (see mirrorInstructionsContent). */
+  function isInstructionsPath(guestPath: string): boolean {
+    const normalized = guestPath.replace(/^\/+/, "");
+    return normalized === "AGENTS.md" || normalized === `${GUEST_WORKSPACE.replace(/^\/+/, "")}/AGENTS.md`;
+  }
+
+  /**
+   * AGENTS.md lives in the local project directory (the platform directory in
+   * embedded hosts) — that is where pi loads session instructions from and
+   * where project duplication picks it up. The workspace sync is one-way
+   * (home -> container /workspace), so agent writes to the workspace-root
+   * copy are mirrored back here. Best-effort by design.
+   */
+  async function mirrorInstructionsContent(content: string, cwd: string): Promise<void> {
+    try {
+      await writeFile(join(cwd, "AGENTS.md"), content, "utf8");
+    } catch {
+      // best-effort mirror
+    }
+  }
 
   pi.registerTool({
     ...localBash,
