@@ -139,6 +139,28 @@ export default function (pi: ExtensionAPI) {
     return id ?? null;
   }
 
+  /**
+   * Local-fallback policy. Embedded hosts (pi-web) set disableLocalFallback in
+   * the project's sandbox-platform.json: a sandbox session whose container is
+   * unreachable MUST fail loudly — silently running tool commands on the HOST
+   * (the pi-web server!) is a correctness and security hole. Plain CLI usage
+   * keeps the traditional local fallback (the cwd IS the workspace there).
+   */
+  function localFallbackBlocked(): boolean {
+    return Boolean(getState(sessionCwd)?.config.disableLocalFallback);
+  }
+
+  function fallbackDenied(): { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown>; isError: boolean } {
+    return {
+      content: [{
+        type: "text",
+        text: "沙箱不可用：未连接容器，且本部署已禁用本地回退（disableLocalFallback）。请检查容器状态（项目设置/沙箱管理面板）后重试。",
+      }],
+      details: {},
+      isError: true,
+    };
+  }
+
   // ---- override built-in tools, routing into the container ----
 
   pi.registerTool({
@@ -147,6 +169,7 @@ export default function (pi: ExtensionAPI) {
       const cid = await activeContainerId(ctx);
       if (!cid) {
         // Offline fallback: container-style paths map to the local project.
+        if (localFallbackBlocked()) return fallbackDenied();
         return localRead.execute(id, { ...params, path: containerPathToLocal(params.path, sessionCwd) }, signal, onUpdate);
       }
       const tool = createReadTool(GUEST_WORKSPACE, {
@@ -161,6 +184,7 @@ export default function (pi: ExtensionAPI) {
     async execute(id, params, signal, onUpdate, ctx) {
       const cid = await activeContainerId(ctx);
       if (!cid) {
+        if (localFallbackBlocked()) return fallbackDenied();
         return localWrite.execute(id, { ...params, path: containerPathToLocal(params.path, sessionCwd) }, signal, onUpdate);
       }
       const tool = createWriteTool(GUEST_WORKSPACE, {
@@ -179,6 +203,7 @@ export default function (pi: ExtensionAPI) {
     async execute(id, params, signal, onUpdate, ctx) {
       const cid = await activeContainerId(ctx);
       if (!cid) {
+        if (localFallbackBlocked()) return fallbackDenied();
         return localEdit.execute(id, { ...params, path: containerPathToLocal(params.path, sessionCwd) }, signal, onUpdate);
       }
       const tool = createEditTool(GUEST_WORKSPACE, {
@@ -225,7 +250,10 @@ export default function (pi: ExtensionAPI) {
     ...localBash,
     async execute(id, params, signal, onUpdate, ctx) {
       const cid = await activeContainerId(ctx);
-      if (!cid) return localBash.execute(id, params, signal, onUpdate);
+      if (!cid) {
+        if (localFallbackBlocked()) return fallbackDenied();
+        return localBash.execute(id, params, signal, onUpdate);
+      }
       const tool = createBashTool(GUEST_WORKSPACE, {
         operations: createPlatformBashOps(getState(sessionCwd)!.client, cid),
       });
@@ -238,6 +266,7 @@ export default function (pi: ExtensionAPI) {
     async execute(id, params, signal, onUpdate, ctx) {
       const cid = await activeContainerId(ctx);
       if (!cid) {
+        if (localFallbackBlocked()) return fallbackDenied();
         return localLs.execute(id, { ...params, path: containerPathToLocal(params.path, sessionCwd) }, signal, onUpdate);
       }
       const tool = createLsTool(GUEST_WORKSPACE, {
@@ -252,6 +281,7 @@ export default function (pi: ExtensionAPI) {
     async execute(id, params, signal, onUpdate, ctx) {
       const cid = await activeContainerId(ctx);
       if (!cid) {
+        if (localFallbackBlocked()) return fallbackDenied();
         return localFind.execute(
           id,
           { ...params, path: containerPathToLocal(params.path ?? ".", sessionCwd) },
@@ -277,6 +307,7 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, params: GrepToolInput, _signal, _onUpdate, ctx) {
       const cid = await activeContainerId(ctx);
       if (!cid) {
+        if (localFallbackBlocked()) return fallbackDenied();
         return localGrep.execute(
           _id,
           { ...params, path: containerPathToLocal(params.path ?? ".", sessionCwd) },

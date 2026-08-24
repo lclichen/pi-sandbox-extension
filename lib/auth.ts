@@ -54,7 +54,7 @@ export async function ensureAuthenticated(
   client: PlatformClient,
   ctx: ExtensionContext,
 ): Promise<boolean> {
-  if (!client.config.token) {
+  if (!client.config.token && !client.config.apiKey) {
     ctx.ui.notify("Not logged in. Run /sandbox-login first.", "warning");
     return false;
   }
