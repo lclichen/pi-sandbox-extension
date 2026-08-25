@@ -20,6 +20,8 @@
  *   cp -R pi-sandbox-extension ~/.pi/agent/extensions/pi-sandbox-extension
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import {
   createBashTool,
   createEditTool,
@@ -30,8 +32,10 @@ import {
   createWriteTool,
   type GrepToolInput,
   truncateHead,
+  type BeforeProviderRequestEvent,
 } from "@earendil-works/pi-coding-agent";
 import { makeClient, ensureAuthenticated, ensureContainer, getState, setState } from "./lib/auth.ts";
+import { ensureLlmProvider, providerNameForSessionTracking } from "./lib/llm.ts";
 import { createContainerAutocompleteProvider } from "./lib/autocomplete.ts";
 import { containerPathToLocal } from "./lib/paths.ts";
 import {
@@ -70,39 +74,91 @@ export default function (pi: ExtensionAPI) {
   const localFind = createFindTool(localCwd);
   const localGrep = createGrepTool(localCwd);
 
+  // add session_id key for tracking. Applies to whichever LLM provider this
+  // extension registered (default "amedac.ai"), plus the bare "litellm" name
+  // for setups that register under that name.
+  pi.on(
+    "before_provider_request",
+    (event: BeforeProviderRequestEvent, ctx: ExtensionContext) => {
+      const payload = event.payload as Record<string, unknown>;
+      if (!payload) return;
+
+      const provider = ctx.model?.provider;
+      if (!provider || !providerNameForSessionTracking().has(provider)) return payload;
+
+      const sessionId = ctx.sessionManager?.getSessionId();
+      if (!sessionId) {
+        console.warn("missing session id");
+        return payload;
+      }
+
+      return {
+        ...payload,
+        litellm_session_id: sessionId,
+      };
+    },
+  );
+
   // Resolve the client/container on session_start so the first user prompt can
   // use the routed tools.
   pi.on("session_start", async (event, ctx) => {
     sessionCwd = ctx.cwd;
     const { client, config } = makeClient(ctx.cwd);
-    setState({ client, config, containerId: undefined, instanceName: undefined });
+    setState({ client, config, containerId: undefined, instanceName: undefined }, sessionCwd);
     // `@` file completion reads container files when a container is connected
     // (wraps the built-in local-fd provider; delegates when not connected).
     ctx.ui.addAutocompleteProvider((current) =>
       createContainerAutocompleteProvider(current, () => {
-        const st = getState();
+        const st = getState(sessionCwd);
         return st && st.containerId !== undefined
           ? { client: st.client, containerId: st.containerId }
           : undefined;
       }),
     );
     if (!(await ensureAuthenticated(client, ctx))) return;
+    // Auto-provision the LLM provider (LiteLLM virtual key) in the background.
+    // Failures here must NOT block the container/tools flow — LLM is optional.
+    void ensureLlmProvider(pi, ctx, client).catch((err) => {
+      console.warn(`[sandbox-platform] LLM provider setup failed: ${err}`);
+    });
     const id = await ensureContainer(pi, ctx, client);
     if (id) ctx.ui.notify(`Sandbox connected: container ${id}.`, "info");
   });
 
   pi.on("session_shutdown", async () => {
-    setState(undefined);
+    setState(undefined, sessionCwd);
   });
 
   // Helper: resolve the active container id, or null to fall back to host.
   async function activeContainerId(ctx: ExtensionContext): Promise<number | null> {
-    const st = getState();
+    const st = getState(sessionCwd);
     if (!st) return null;
     if (st.containerId) return st.containerId;
     if (!(await ensureAuthenticated(st.client, ctx))) return null;
     const id = await ensureContainer(pi, ctx, st.client);
     return id ?? null;
+  }
+
+  /**
+   * Local-fallback policy. Embedded hosts (pi-web) set disableLocalFallback in
+   * the project's sandbox-platform.json: a sandbox session whose container is
+   * unreachable MUST fail loudly — silently running tool commands on the HOST
+   * (the pi-web server!) is a correctness and security hole. Plain CLI usage
+   * keeps the traditional local fallback (the cwd IS the workspace there).
+   */
+  function localFallbackBlocked(): boolean {
+    return Boolean(getState(sessionCwd)?.config.disableLocalFallback);
+  }
+
+  function fallbackDenied(): { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown>; isError: boolean } {
+    return {
+      content: [{
+        type: "text",
+        text: "沙箱不可用：未连接容器，且本部署已禁用本地回退（disableLocalFallback）。请检查容器状态（项目设置/沙箱管理面板）后重试。",
+      }],
+      details: {},
+      isError: true,
+    };
   }
 
   // ---- override built-in tools, routing into the container ----
@@ -113,10 +169,11 @@ export default function (pi: ExtensionAPI) {
       const cid = await activeContainerId(ctx);
       if (!cid) {
         // Offline fallback: container-style paths map to the local project.
+        if (localFallbackBlocked()) return fallbackDenied();
         return localRead.execute(id, { ...params, path: containerPathToLocal(params.path, sessionCwd) }, signal, onUpdate);
       }
       const tool = createReadTool(GUEST_WORKSPACE, {
-        operations: createPlatformReadOps(getState()!.client, cid, sessionCwd),
+        operations: createPlatformReadOps(getState(sessionCwd)!.client, cid, sessionCwd),
       });
       return tool.execute(id, params, signal, onUpdate);
     },
@@ -127,12 +184,17 @@ export default function (pi: ExtensionAPI) {
     async execute(id, params, signal, onUpdate, ctx) {
       const cid = await activeContainerId(ctx);
       if (!cid) {
+        if (localFallbackBlocked()) return fallbackDenied();
         return localWrite.execute(id, { ...params, path: containerPathToLocal(params.path, sessionCwd) }, signal, onUpdate);
       }
       const tool = createWriteTool(GUEST_WORKSPACE, {
-        operations: createPlatformWriteOps(getState()!.client, cid, sessionCwd),
+        operations: createPlatformWriteOps(getState(sessionCwd)!.client, cid, sessionCwd),
       });
-      return tool.execute(id, params, signal, onUpdate);
+      const result = await tool.execute(id, params, signal, onUpdate);
+      if (!result.isError && isInstructionsPath(params.path)) {
+        await mirrorInstructionsContent(params.content, sessionCwd);
+      }
+      return result;
     },
   });
 
@@ -141,22 +203,59 @@ export default function (pi: ExtensionAPI) {
     async execute(id, params, signal, onUpdate, ctx) {
       const cid = await activeContainerId(ctx);
       if (!cid) {
+        if (localFallbackBlocked()) return fallbackDenied();
         return localEdit.execute(id, { ...params, path: containerPathToLocal(params.path, sessionCwd) }, signal, onUpdate);
       }
       const tool = createEditTool(GUEST_WORKSPACE, {
-        operations: createPlatformEditOps(getState()!.client, cid, sessionCwd),
+        operations: createPlatformEditOps(getState(sessionCwd)!.client, cid, sessionCwd),
       });
-      return tool.execute(id, params, signal, onUpdate);
+      const result = await tool.execute(id, params, signal, onUpdate);
+      if (!result.isError && isInstructionsPath(params.path)) {
+        // Mirror the edited file back verbatim via the raw platform read ops
+        // (tool-level reads carry line numbers; ops do not).
+        try {
+          const raw = await createPlatformReadOps(getState(sessionCwd)!.client, cid, sessionCwd).readFile(params.path);
+          await mirrorInstructionsContent(raw.toString("utf8"), sessionCwd);
+        } catch {
+          // best-effort mirror
+        }
+      }
+      return result;
     },
   });
+
+  /** Workspace-root instruction files that must stay mirrored to the local
+   *  project directory (see mirrorInstructionsContent). */
+  function isInstructionsPath(guestPath: string): boolean {
+    const normalized = guestPath.replace(/^\/+/, "");
+    return normalized === "AGENTS.md" || normalized === `${GUEST_WORKSPACE.replace(/^\/+/, "")}/AGENTS.md`;
+  }
+
+  /**
+   * AGENTS.md lives in the local project directory (the platform directory in
+   * embedded hosts) — that is where pi loads session instructions from and
+   * where project duplication picks it up. The workspace sync is one-way
+   * (home -> container /workspace), so agent writes to the workspace-root
+   * copy are mirrored back here. Best-effort by design.
+   */
+  async function mirrorInstructionsContent(content: string, cwd: string): Promise<void> {
+    try {
+      await writeFile(join(cwd, "AGENTS.md"), content, "utf8");
+    } catch {
+      // best-effort mirror
+    }
+  }
 
   pi.registerTool({
     ...localBash,
     async execute(id, params, signal, onUpdate, ctx) {
       const cid = await activeContainerId(ctx);
-      if (!cid) return localBash.execute(id, params, signal, onUpdate);
+      if (!cid) {
+        if (localFallbackBlocked()) return fallbackDenied();
+        return localBash.execute(id, params, signal, onUpdate);
+      }
       const tool = createBashTool(GUEST_WORKSPACE, {
-        operations: createPlatformBashOps(getState()!.client, cid),
+        operations: createPlatformBashOps(getState(sessionCwd)!.client, cid),
       });
       return tool.execute(id, params, signal, onUpdate);
     },
@@ -167,10 +266,11 @@ export default function (pi: ExtensionAPI) {
     async execute(id, params, signal, onUpdate, ctx) {
       const cid = await activeContainerId(ctx);
       if (!cid) {
+        if (localFallbackBlocked()) return fallbackDenied();
         return localLs.execute(id, { ...params, path: containerPathToLocal(params.path, sessionCwd) }, signal, onUpdate);
       }
       const tool = createLsTool(GUEST_WORKSPACE, {
-        operations: createPlatformLsOps(getState()!.client, cid, sessionCwd),
+        operations: createPlatformLsOps(getState(sessionCwd)!.client, cid, sessionCwd),
       });
       return tool.execute(id, params, signal, onUpdate);
     },
@@ -181,6 +281,7 @@ export default function (pi: ExtensionAPI) {
     async execute(id, params, signal, onUpdate, ctx) {
       const cid = await activeContainerId(ctx);
       if (!cid) {
+        if (localFallbackBlocked()) return fallbackDenied();
         return localFind.execute(
           id,
           { ...params, path: containerPathToLocal(params.path ?? ".", sessionCwd) },
@@ -188,7 +289,7 @@ export default function (pi: ExtensionAPI) {
           onUpdate,
         );
       }
-      const st = getState()!;
+      const st = getState(sessionCwd)!;
       const results = await platformFind(st.client, cid, {
         pattern: params.pattern,
         path: params.path,
@@ -206,6 +307,7 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, params: GrepToolInput, _signal, _onUpdate, ctx) {
       const cid = await activeContainerId(ctx);
       if (!cid) {
+        if (localFallbackBlocked()) return fallbackDenied();
         return localGrep.execute(
           _id,
           { ...params, path: containerPathToLocal(params.path ?? ".", sessionCwd) },
@@ -213,7 +315,7 @@ export default function (pi: ExtensionAPI) {
           _onUpdate,
         );
       }
-      const st = getState()!;
+      const st = getState(sessionCwd)!;
       const output = await platformGrep(st.client, cid, {
         pattern: params.pattern,
         path: params.path,
@@ -234,14 +336,14 @@ export default function (pi: ExtensionAPI) {
   // LOCAL session cwd to these operations; pin it to the container workspace
   // root instead (withContainerCwd), where the synced project lives.
   pi.on("user_bash", async (_event, ctx) => {
-    const st = getState();
+    const st = getState(sessionCwd);
     if (!st?.containerId) return; // fall back to local
     return { operations: withContainerCwd(createPlatformBashOps(st.client, st.containerId)) };
   });
 
   // Rewrite the system prompt's cwd to the guest workspace when connected.
   pi.on("before_agent_start", async (event, ctx) => {
-    const st = getState();
+    const st = getState(sessionCwd);
     if (!st?.containerId) return;
     const localLine = `Current working directory: ${sessionCwd}`;
     const guestLine = `Current working directory: ${GUEST_WORKSPACE} (sandbox platform container ${st.containerId}; platform ${st.client.url})`;
@@ -254,7 +356,7 @@ export default function (pi: ExtensionAPI) {
   // Keep a persistent visible indicator that tool calls run in the remote
   // container, refreshed every turn so it never disappears during a session.
   pi.on("turn_start", async (_event, ctx) => {
-    const st = getState();
+    const st = getState(sessionCwd);
     if (!st?.containerId) return;
     ctx.ui.setStatus(
       "sandbox",

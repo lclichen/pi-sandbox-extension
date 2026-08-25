@@ -22,6 +22,9 @@ export class PlatformError extends Error {
 }
 
 export class PlatformClient {
+  /** Diagnoses the most recent refresh failure, for surfacing to the user. */
+  lastRefreshDiagnosis: "ok" | "expired" | "unreachable" | "no_refresh_token" = "ok";
+
   constructor(private readonly config: PlatformConfig) {}
 
   get url(): string {
@@ -76,22 +79,40 @@ export class PlatformClient {
     return (await res.json()) as T;
   }
 
-  /** Exchange the refresh token for a new pair. Returns true on success. */
+  /**
+   * Exchange the refresh token for a new pair. Returns true on success. On
+   * failure, sets {@link lastRefreshDiagnosis} so callers can tell a network
+   * hiccup ("platform unreachable, retry") apart from an expired session
+   * ("re-login required") — both used to collapse to a single `false` with no
+   * diagnostic, which left users guessing.
+   */
   async refresh(): Promise<boolean> {
-    if (!this.config.refreshToken) return false;
+    if (!this.config.refreshToken) {
+      this.lastRefreshDiagnosis = "no_refresh_token";
+      return false;
+    }
     try {
       const res = await fetch(`${this.config.url}/api/v1/auth/refresh`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ refreshToken: this.config.refreshToken }),
       });
-      if (!res.ok) return false;
+      if (!res.ok) {
+        // 401/403 from /auth/refresh means the refresh token itself is invalid
+        // or revoked — the user must re-login. Other non-2xx (5xx) is treated
+        // as a transient platform issue.
+        this.lastRefreshDiagnosis = res.status === 401 || res.status === 403 ? "expired" : "unreachable";
+        return false;
+      }
       const pair = (await res.json()) as { accessToken: string; refreshToken: string };
       this.config.token = pair.accessToken;
       this.config.refreshToken = pair.refreshToken;
       saveConfig({ token: pair.accessToken, refreshToken: pair.refreshToken });
+      this.lastRefreshDiagnosis = "ok";
       return true;
     } catch {
+      // Network error (fetch rejected) — distinct from an auth rejection.
+      this.lastRefreshDiagnosis = "unreachable";
       return false;
     }
   }
@@ -137,6 +158,54 @@ export class PlatformClient {
   async listImages(): Promise<Array<{ id: number; name: string; display_name: string; default_resources?: { cpu: number; memoryMb: number; diskGb: number } | null }>> {
     const res = await this.request<{ images: Array<{ id: number; name: string; display_name: string; default_resources?: { cpu: number; memoryMb: number; diskGb: number } | null }> }>("/api/v1/images");
     return res.images;
+  }
+
+  // ---- LLM (LiteLLM) integration ----
+  // The platform manages LiteLLM users/keys on the user's behalf. These let the
+  // extension auto-provision the agent's LLM provider after login, so the user
+  // never has to copy a virtual key manually.
+
+  /** My LLM access status. binding is null when access hasn't been granted. */
+  async getMyLlmStatus(): Promise<{
+    binding: {
+      platform_user_id: number;
+      litellm_user_id: string;
+      max_budget: number;
+      budget_duration: string | null;
+      models: string[] | null;
+      revoked_at: string | null;
+    } | null;
+    litellm: { spend?: number; max_budget?: number | null } | null;
+  }> {
+    return this.request("/api/v1/llm/me");
+  }
+
+  async listMyLlmKeys(): Promise<Array<{
+    id: number;
+    name: string;
+    key_prefix: string;
+    models: string[] | null;
+    max_budget: number | null;
+    created_at: string;
+    revoked_at: string | null;
+  }>> {
+    const res = await this.request<{ keys: Array<{ id: number; name: string; key_prefix: string; models: string[] | null; max_budget: number | null; created_at: string; revoked_at: string | null }> }>("/api/v1/llm/me/keys");
+    return res.keys;
+  }
+
+  /** Decrypt + return a key's plaintext (sensitive; the platform audits this). */
+  async revealMyLlmKey(id: number): Promise<{ id: number; plaintext: string }> {
+    return this.request(`/api/v1/llm/me/keys/${id}/reveal`, { method: "POST" });
+  }
+
+  /** The base URL + usage instructions for driving LLM traffic directly. */
+  async getLlmEndpoint(): Promise<{ baseUrl: string; instructions: string }> {
+    return this.request("/api/v1/llm/me/endpoint");
+  }
+
+  async listLlmModels(): Promise<Array<{ id: string; owned_by?: string }>> {
+    const res = await this.request<{ models: Array<{ id: string; owned_by?: string }> }>("/api/v1/llm/models");
+    return res.models;
   }
 
   // ---- containers ----
