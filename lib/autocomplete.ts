@@ -257,41 +257,9 @@ export function createContainerAutocompleteProvider(
       // mishandling those breaks e.g. "/sandbox-login" submitting as plain
       // "sandbox-login".
       if (item.value.startsWith("@")) {
-        return this.applyAtCompletion(lines, cursorLine, cursorCol, item, prefix);
+        return applyContainerAtCompletion(lines, cursorLine, cursorCol, item, prefix);
       }
       return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
-    },
-
-    /** @-attachment insertion, mirroring the built-in branch. */
-    applyAtCompletion(
-      lines: string[],
-      cursorLine: number,
-      cursorCol: number,
-      item: AutocompleteItem,
-      prefix: string,
-    ): { lines: string[]; cursorLine: number; cursorCol: number } {
-      const currentLine = lines[cursorLine] ?? "";
-      const beforePrefix = currentLine.slice(0, cursorCol - prefix.length);
-      const afterCursor = currentLine.slice(cursorCol);
-      const isQuotedPrefix = prefix.startsWith('"') || prefix.startsWith('@"');
-      const hasLeadingQuoteAfterCursor = afterCursor.startsWith('"');
-      const hasTrailingQuoteInItem = item.value.endsWith('"');
-      const adjustedAfterCursor =
-        isQuotedPrefix && hasTrailingQuoteInItem && hasLeadingQuoteAfterCursor ? afterCursor.slice(1) : afterCursor;
-
-      const isDirectory = item.label.endsWith("/");
-      const suffix = isDirectory ? "" : " "; // no space after dirs: keep completing
-      const newLine = `${beforePrefix + item.value}${suffix}${adjustedAfterCursor}`;
-      const newLines = [...lines];
-      newLines[cursorLine] = newLine;
-
-      const hasTrailingQuote = item.value.endsWith('"');
-      const cursorOffset = isDirectory && hasTrailingQuote ? item.value.length - 1 : item.value.length;
-      return {
-        lines: newLines,
-        cursorLine,
-        cursorCol: beforePrefix.length + cursorOffset + suffix.length,
-      };
     },
 
     shouldTriggerFileCompletion(lines, cursorLine, cursorCol) {
@@ -305,5 +273,37 @@ export function createContainerAutocompleteProvider(
       }
       return true;
     },
+  };
+}
+
+/** @-attachment insertion, mirroring the built-in branch. */
+function applyContainerAtCompletion(
+  lines: string[],
+  cursorLine: number,
+  cursorCol: number,
+  item: AutocompleteItem,
+  prefix: string,
+): { lines: string[]; cursorLine: number; cursorCol: number } {
+  const currentLine = lines[cursorLine] ?? "";
+  const beforePrefix = currentLine.slice(0, cursorCol - prefix.length);
+  const afterCursor = currentLine.slice(cursorCol);
+  const isQuotedPrefix = prefix.startsWith('"') || prefix.startsWith('@"');
+  const hasLeadingQuoteAfterCursor = afterCursor.startsWith('"');
+  const hasTrailingQuoteInItem = item.value.endsWith('"');
+  const adjustedAfterCursor =
+    isQuotedPrefix && hasTrailingQuoteInItem && hasLeadingQuoteAfterCursor ? afterCursor.slice(1) : afterCursor;
+
+  const isDirectory = item.label.endsWith("/");
+  const suffix = isDirectory ? "" : " "; // no space after dirs: keep completing
+  const newLine = `${beforePrefix + item.value}${suffix}${adjustedAfterCursor}`;
+  const newLines = [...lines];
+  newLines[cursorLine] = newLine;
+
+  const hasTrailingQuote = item.value.endsWith('"');
+  const cursorOffset = isDirectory && hasTrailingQuote ? item.value.length - 1 : item.value.length;
+  return {
+    lines: newLines,
+    cursorLine,
+    cursorCol: beforePrefix.length + cursorOffset + suffix.length,
   };
 }

@@ -150,15 +150,12 @@ export default function (pi: ExtensionAPI) {
     return Boolean(getState(sessionCwd)?.config.disableLocalFallback);
   }
 
-  function fallbackDenied(): { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown>; isError: boolean } {
-    return {
-      content: [{
-        type: "text",
-        text: "沙箱不可用：未连接容器，且本部署已禁用本地回退（disableLocalFallback）。请检查容器状态（项目设置/沙箱管理面板）后重试。",
-      }],
-      details: {},
-      isError: true,
-    };
+  function fallbackDenied(): never {
+    // pi 0.84: tool errors are signalled by throwing; a returned `isError`
+    // flag is ignored and the result would be treated as success.
+    throw new Error(
+      "沙箱不可用：未连接容器，且本部署已禁用本地回退（disableLocalFallback）。请检查容器状态（项目设置/沙箱管理面板）后重试。",
+    );
   }
 
   // ---- override built-in tools, routing into the container ----
@@ -191,7 +188,7 @@ export default function (pi: ExtensionAPI) {
         operations: createPlatformWriteOps(getState(sessionCwd)!.client, cid, sessionCwd),
       });
       const result = await tool.execute(id, params, signal, onUpdate);
-      if (!result.isError && isInstructionsPath(params.path)) {
+      if (isInstructionsPath(params.path)) {
         await mirrorInstructionsContent(params.content, sessionCwd);
       }
       return result;
@@ -210,7 +207,7 @@ export default function (pi: ExtensionAPI) {
         operations: createPlatformEditOps(getState(sessionCwd)!.client, cid, sessionCwd),
       });
       const result = await tool.execute(id, params, signal, onUpdate);
-      if (!result.isError && isInstructionsPath(params.path)) {
+      if (isInstructionsPath(params.path)) {
         // Mirror the edited file back verbatim via the raw platform read ops
         // (tool-level reads carry line numbers; ops do not).
         try {
@@ -267,7 +264,7 @@ export default function (pi: ExtensionAPI) {
       const cid = await activeContainerId(ctx);
       if (!cid) {
         if (localFallbackBlocked()) return fallbackDenied();
-        return localLs.execute(id, { ...params, path: containerPathToLocal(params.path, sessionCwd) }, signal, onUpdate);
+        return localLs.execute(id, { ...params, path: containerPathToLocal(params.path ?? ".", sessionCwd) }, signal, onUpdate);
       }
       const tool = createLsTool(GUEST_WORKSPACE, {
         operations: createPlatformLsOps(getState(sessionCwd)!.client, cid, sessionCwd),
@@ -298,6 +295,7 @@ export default function (pi: ExtensionAPI) {
       const { content } = truncateHead(results.join("\n"));
       return {
         content: [{ type: "text", text: content || "No matches" }],
+        details: {},
       };
     },
   });
@@ -328,6 +326,7 @@ export default function (pi: ExtensionAPI) {
       const { content } = truncateHead(output);
       return {
         content: [{ type: "text", text: content || "No matches found" }],
+        details: {},
       };
     },
   });

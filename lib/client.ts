@@ -25,7 +25,7 @@ export class PlatformClient {
   /** Diagnoses the most recent refresh failure, for surfacing to the user. */
   lastRefreshDiagnosis: "ok" | "expired" | "unreachable" | "no_refresh_token" = "ok";
 
-  constructor(private readonly config: PlatformConfig) {}
+  constructor(public readonly config: PlatformConfig) {}
 
   get url(): string {
     return this.config.url;
@@ -64,7 +64,7 @@ export class PlatformClient {
     if (!res.ok) {
       let payload: { code?: string; message?: string; details?: unknown } = {};
       try {
-        payload = await res.json();
+        payload = (await res.json()) as { code?: string; message?: string; details?: unknown };
       } catch {
         // non-JSON error
       }
@@ -329,7 +329,7 @@ export class PlatformClient {
     if (!res.ok) {
       let payload: { code?: string; message?: string } = {};
       try {
-        payload = await res.json();
+        payload = (await res.json()) as { code?: string; message?: string };
       } catch {
         // non-JSON error
       }
