@@ -74,6 +74,18 @@ export default function (pi: ExtensionAPI) {
   const localFind = createFindTool(localCwd);
   const localGrep = createGrepTool(localCwd);
 
+  // Skills bridge: skills are discovered from the LOCAL project home
+  // (<sessionCwd>/.pi/skills) and never synced into the container. read/ls
+  // calls that map under that directory are served from the local side so
+  // the model can inspect SKILL.md and reference files; everything else
+  // keeps routing into the container.
+  const isLocalSkillsPath = (requested: string): string | null => {
+    const mapped = containerPathToLocal(requested, sessionCwd);
+    const skillsRoot = join(sessionCwd, ".pi", "skills");
+    if (mapped === skillsRoot || mapped.startsWith(skillsRoot + "/")) return mapped;
+    return null;
+  };
+
   // add session_id key for tracking. Applies to whichever LLM provider this
   // extension registered (default "amedac.ai"), plus the bare "litellm" name
   // for setups that register under that name.
@@ -163,6 +175,10 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     ...localRead,
     async execute(id, params, signal, onUpdate, ctx) {
+      // Skills live in the local project home, outside the container — bridge
+      // read calls under .pi/skills to the local side before container routing.
+      const bridged = isLocalSkillsPath(params.path);
+      if (bridged) return localRead.execute(id, { ...params, path: bridged }, signal, onUpdate);
       const cid = await activeContainerId(ctx);
       if (!cid) {
         // Offline fallback: container-style paths map to the local project.
@@ -261,6 +277,9 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     ...localLs,
     async execute(id, params, signal, onUpdate, ctx) {
+      // Same skills bridge as read: list the local .pi/skills tree.
+      const bridged = isLocalSkillsPath(params.path ?? ".pi/skills");
+      if (bridged) return localLs.execute(id, { ...params, path: bridged }, signal, onUpdate);
       const cid = await activeContainerId(ctx);
       if (!cid) {
         if (localFallbackBlocked()) return fallbackDenied();
